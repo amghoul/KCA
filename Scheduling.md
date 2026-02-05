@@ -8,6 +8,7 @@ kubectl taint nodes node01 spray=mortein:NoSchedule
 
 ### On Pod
 - No Imperative
+- Declarative Way
 ```yaml
 ---
 apiVersion: v1
