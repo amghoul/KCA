@@ -86,3 +86,56 @@ spec:
 ```
 ### Notes:
 - The operators are: In, NotIn, Exists, DoesNotExist, Gt and Lt
+
+## Resource Limit
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: elephant
+  namespace: default
+spec:
+  containers:
+  - image: polinux/stress
+    name: mem-stress
+    resources:
+      limits:
+        memory: 20Mi
+        cpu: 2
+      requests:
+        memory: 5Mi
+        cpu: 1
+```
+## Limit Range
+### For CPU
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: cpu-resource-constraint
+spec:
+  limits:
+  - default: # this section defines default limits
+      cpu: 500m
+    defaultRequest: # this section defines default requests
+      cpu: 500m
+    max: # max and min define the limit range
+      cpu: "1"
+    min:
+      cpu: 100m
+    type: Container
+
+```
+## Resource Quota
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: "1Gi"
+    limits.cpu: "2"
+    limits.memory: "2Gi"
+```
