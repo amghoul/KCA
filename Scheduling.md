@@ -84,3 +84,5 @@ spec:
                 values:
                 - blue
 ```
+### Notes:
+- The operators are: In, NotIn, Exists, DoesNotExist, Gt and Lt
