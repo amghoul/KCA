@@ -139,3 +139,37 @@ spec:
     limits.cpu: "2"
     limits.memory: "2Gi"
 ```
+## DaemonSets
+- DaemonSets ensure that exactly one copy of a pod runs on every node in your Kubernetes cluster. 
+- When you add a new node, the DaemonSet automatically deploys the pod on the new node
+```yaml 
+# daemon-set-definition.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: monitoring-daemon
+spec:
+  selector:
+    matchLabels:
+      app: monitoring-agent
+  template:
+    metadata:
+      labels:
+        app: monitoring-agent
+    spec:
+      containers:
+        - name: monitoring-agent
+          image: monitoring-agent
+```
+- Once your YAML file is ready, create the DaemonSet using the following command
+```bash
+kubectl create -f daemon-set-definition.yaml
+```
+- Verify the DaemonSet’s creation by running:
+```bash
+kubectl get daemonsets
+```
+- For more detailed information on your DaemonSet, use:
+```bash
+kubectl describe daemonset monitoring-daemon
+```
