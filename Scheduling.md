@@ -203,3 +203,110 @@ ExecStart=/usr/local/bin/kubelet \
 staticPodPath: /etc/kubernetes/manifests
 ```
 - OR you can use `ps -aux | grep kubelet` to find the options
+
+## Priority Classes
+- Priority classes allow you to assign a numerical value to Pods, where a higher number indicates higher priority. 
+- For user-deployed applications, the value can range from approximately -2 billion to +1 billion.
+- Additionally, there is a reserved range for internal system-critical Pods (like the Kubernetes control plane) which can have values up to 2 billion.
+- **Note** To check the current priority classes in your cluster, run the following command:
+```bash
+kubectl get priorityclass
+```
+### **Creating a New Priority Class:**
+- **By imperative command:**
+```bash
+kubectl create priorityclass high-priority --value=100000 --preemption-pol
+icy=PreemptLowerPriority
+```
+- **By Declarative command:**
+```yaml
+# priority-class.yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 1000000000
+description: "Priority class for mission critical pods" # optional
+globalDefault: true # optional
+preemptionPolicy: PreemptLowerPriority # optional is the default. Other options: never
+```
+### On Pod:
+```yaml
+# pod-definition.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+spec:
+  containers:
+    - name: nginx
+      image: nginx
+      ports:
+        - containerPort: 8080
+  priorityClassName: high-priority
+```
+## Multiple Scheduler
+### Configuring Schedulers with YAML
+Below are examples of configuration files for both the default and a custom scheduler. Each YAML file uses a profiles list to define the scheduler’s name.
+```yaml
+# my-scheduler-config.yaml
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+profiles:
+  - schedulerName: my-scheduler
+```
+```yaml
+# scheduler-config.yaml
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+profiles:
+  - schedulerName: default-scheduler
+```
+### Deploying an Additional Scheduler
+You can deploy an additional scheduler using the existing kube-scheduler binary, tailoring its configuration through specific service files.
+- Begin by downloading the kube-scheduler binary:
+```bash
+wget https://storage.googleapis.com/kubernetes-release/release/v1.12.0/bin/linux/amd64/kube-scheduler
+```
+- Create separate service files for each scheduler. For example, consider the following definitions:
+```
+# kube-scheduler.service
+ExecStart=/usr/local/bin/kube-scheduler --config=/etc/kubernetes/config/kube-scheduler.yaml
+```
+- Define Scheduler Configuration Files
+```yaml
+# my-scheduler-config.yaml
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+profiles:
+  - schedulerName: my-scheduler
+```
+### Deploying the Custom Scheduler as a Pod
+- In addition to running the scheduler as a service, you can deploy it as a pod inside the Kubernetes cluster. This method involves creating a pod definition that references the scheduler’s configuration file.
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-custom-scheduler
+  namespace: kube-system
+spec:
+  containers:
+    - name: kube-scheduler
+      image: k8s.gcr.io/kube-scheduler-amd64:v1.11.3
+      command:
+        - kube-scheduler
+        - --address=127.0.0.1
+        - --kubeconfig=/etc/kubernetes/scheduler.conf
+        - --config=/etc/kubernetes/my-scheduler-config.yaml
+```
+### Verifying Scheduler Operation
+- To confirm which scheduler assigned a pod, review the events in your namespace:
+```bash
+kubectl get events -o wide
+```
+- If you encounter issues, view the scheduler logs with:
+```bash
+kubectl logs my-custom-scheduler --namespace=kube-system
+```
