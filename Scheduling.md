@@ -173,3 +173,33 @@ kubectl get daemonsets
 ```bash
 kubectl describe daemonset monitoring-daemon
 ```
+## Static Pods
+- Static pods are created directly by the kubelet without the intervention of the API server or other control plane components.
+- You can place static pods in any directory on the host. The directory location is provided to the kubelet at startup by using the `--pod-manifest-path` option in kubelet service file:
+```bash
+ExecStart=/usr/local/bin/kubelet \
+  --container-runtime=remote \
+  --container-runtime-endpoint=unix:///var/run/containerd/containerd.sock \
+  --pod-manifest-path=/etc/kubernetes/manifests \
+  --kubeconfig=/var/lib/kubelet/kubeconfig \
+  --network-plugin=cni \
+  --register-node=true \
+  --v=2
+```
+- Alternatively, you can specify a configuration file `--config` that includes the manifest directory path. For example:
+```bash
+# kubelet.service
+ExecStart=/usr/local/bin/kubelet \
+  --container-runtime=remote \
+  --container-runtime-endpoint=unix:///var/run/containerd/containerd.sock \
+  --config=kubeconfig.yaml \
+  --kubeconfig=/var/lib/kubelet/kubeconfig \
+  --network-plugin=cni \
+  --register-node=true \
+  --v=2
+```
+```yaml
+# kubeconfig.yaml
+staticPodPath: /etc/kubernetes/manifests
+```
+- OR you can use `ps -aux | grep kubelet` to find the options
