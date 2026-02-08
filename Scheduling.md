@@ -310,3 +310,74 @@ kubectl get events -o wide
 ```bash
 kubectl logs my-custom-scheduler --namespace=kube-system
 ```
+## Admission Controllers
+ Kubectl --> kubeapi-server --> authentication --> authorization --> admission controllers --> ceate pod
+ - To view the admission controllers enabled by default, run:
+```bash
+kube-apiserver -h | grep enable-admission-plugins
+```
+or on kube-adm:
+```bash
+kubectl exec kube-apiserver-controlplan -n kube-system -- kube-apiserver -h | grep enable-admission-plugins
+```
+- To add an admission controller, update the `--enable-admission-plugins` flag on the Kube API server. In a kubeadm-based setup, this involves modifying the Kube API server manifest:
+```bash
+ExecStart=/usr/local/bin/kube-apiserver \\
+  --advertise-address=${INTERNAL_IP} \\
+  --allow-privileged=true \\
+  --apiserver-count=3 \\
+  --authorization-mode=Node,RBAC \\
+  --bind-address=0.0.0.0 \\
+  --enable-swagger-ui=true \\
+  --etcd-servers=https://127.0.0.1:2379 \\
+  --event-ttl=1h \\
+  --runtime-config=api/all \\
+  --service-cluster-ip-range=10.32.0.0/24 \\
+  --service-node-port-range=30000-32767 \\
+  --v=2 \\
+  --enable-admission-plugins=NodeRestriction,NamespaceAutoProvision
+```
+- For `kubeadm-based` setups where the API server runs as a pod, the manifest might look like this:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: null
+  name: kube-apiserver
+  namespace: kube-system
+spec:
+  containers:
+  - command:
+    - kube-apiserver
+    - --authorization-mode=Node,RBAC
+    - --advertise-address=172.17.0.107
+    - --allow-privileged=true
+    - --enable-bootstrap-token-auth=true
+    - --enable-admission-plugins=NodeRestriction,NamespaceAutoProvision
+    image: k8s.gcr.io/kube-apiserver-amd64:v1.11.3
+    name: kube-apiserver
+```
+- To disable specific admission controller plugins, use the `--disable-admission-plugins` flag similarly.
+- **Note:** Both the namespace auto-provision and namespace existence admission controllers are deprecated. They have been replaced by the namespace lifecycle admission controller, which enforces that requests to non-existent namespaces are rejected and protects default namespaces (default, kube-system, and kube-public) from deletion.
+
+## Validating and Mutating Admission Controls
+- To instruct the API server to use your webhook for validations or mutations, create a `ValidatingWebhookConfiguration` or a `MutatingWebhookConfiguration` object. Below is an example configuration for a validating webhook that triggers on pod creation:
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: "pod-policy.example.com"
+webhooks:
+- name: "pod-policy.example.com"
+  clientConfig:
+    service:
+      namespace: "webhook-namespace"
+      name: "webhook-service"
+    caBundle: "Ci0tLS0tQk......tLS0K"
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"]
+    scope: "Namespaced"
+```
