@@ -361,6 +361,7 @@ spec:
 - **Note:** Both the namespace auto-provision and namespace existence admission controllers are deprecated. They have been replaced by the namespace lifecycle admission controller, which enforces that requests to non-existent namespaces are rejected and protects default namespaces (default, kube-system, and kube-public) from deletion.
 
 ## Validating and Mutating Admission Controls
+- Mutating, then Validating
 - To instruct the API server to use your webhook for validations or mutations, create a `ValidatingWebhookConfiguration` or a `MutatingWebhookConfiguration` object. Below is an example configuration for a validating webhook that triggers on pod creation:
 ```yaml
 apiVersion: admissionregistration.k8s.io/v1
