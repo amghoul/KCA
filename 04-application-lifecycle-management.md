@@ -113,11 +113,11 @@ spec:
       image: simple-webapp-color
       ports:
         - containerPort: 80
-  env:
-    - name: APP_COLOR
-      value: blue
-    - name: APP_MODE
-      value: prod
+      env:
+        - name: APP_COLOR
+          value: blue
+        - name: APP_MODE
+          value: prod
 ```
 - modify the pod definition to use the `envFrom` property:
 ```yaml
@@ -131,9 +131,9 @@ spec:
       image: simple-webapp-color
       ports:
         - containerPort: 80
-  envFrom:
-    - configMapRef:
-        name: app-color
+      envFrom:
+        - configMapRef:
+            name: app-color
 ```
 - As a `volume`
 ```yaml
