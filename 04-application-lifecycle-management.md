@@ -181,3 +181,73 @@ To check the stored configuration data, use the describe command:
 ```bash
 kubectl describe configmaps
 ```
+## Secrets
+- Secrets encode data using Base64. Although it provides obfuscation, it is not a substitute for encryption.
+- **Imperative commands**:
+```bash
+kubectl create secret generic app-secret \
+  --from-literal=DB_Host=mysql \
+  --from-literal=DB_User=root \
+  --from-literal=DB_Password=paswd
+```
+- **Declarative Creation of a Secret:**
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+data:
+  DB_Host: bXlzcWw=
+  DB_User: cm9vdA==
+  DB_Password: cGFzd3Jk
+```
+Apply the definition with the following command:
+```bash
+kubectl create -f secret-data.yaml
+```
+- Converting Plaintext to `Base64`:
+```bash
+echo -n 'mysql' | base64
+echo -n 'root' | base64
+echo -n 'paswrd' | base64
+# Output: cGFzd3Jk
+```
+- If you need to decode an encoded value, use the `base64 --decode` command:
+```bash
+echo -n 'bXlzcWw=' | base64 --decode
+echo -n 'cm9vdA==' | base64 --decode
+echo -n 'cGFzd3Jk' | base64 --decode
+# Output: paswrd
+```
+- Injecting Secrets into a Pod:
+```yaml
+# pod-definition.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-webapp-color
+  labels:
+    name: simple-webapp-color
+spec:
+  containers:
+  - name: simple-webapp-color
+    image: simple-webapp-color
+    ports:
+    - containerPort: 8080
+    envFrom:
+    - secretRef:
+        name: app-secret
+```
+- **Mounting Secrets as Files:**
+Alternatively, mount the Secret as files within a `volume`. Each key in the Secret becomes a separate file:
+```yaml
+volumes:
+- name: app-secret-volume
+  secret:
+    secretName: app-secret
+```
+- After mounting, listing the directory contents should display each key as a file:
+```bash
+ls /opt/app-secret-volumes
+# Output: DB_Host  DB_Password  DB_User
+```
