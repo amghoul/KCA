@@ -251,3 +251,60 @@ volumes:
 ls /opt/app-secret-volumes
 # Output: DB_Host  DB_Password  DB_User
 ```
+## Multi Container Pods
+### Co-located containers
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-webapp
+  labels:
+    name: simple-webapp
+spec:
+  containers:
+    - name: simple-webapp
+      image: simple-webapp
+      ports:
+        - containerPort: 8080
+    - name: log-agent
+      image: log-agent
+``` 
+### Regular init containers:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-webapp
+  labels:
+    name: simple-webapp
+spec:
+  containers:
+    - name: simple-webapp
+      image: simple-webapp
+      ports:
+        - containerPort: 8080
+  initContainers:
+    - name: check-db
+      image: check-db
+      command: [..]
+```
+### Sidecar Containers:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-webapp
+  labels:
+    name: simple-webapp
+spec:
+  containers:
+    - name: simple-webapp
+      image: simple-webapp
+      ports:
+        - containerPort: 8080
+  initContainers:
+    - name: check-db
+      image: check-db
+      command: [..]
+      restartPolicy: Always
+```
