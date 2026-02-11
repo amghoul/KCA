@@ -308,3 +308,74 @@ spec:
       command: [..]
       restartPolicy: Always
 ```
+## Manual & Autoscaling
+### Manual Horizontal Scaling
+- To monitor the pod’s resource consumption manually, you might run:
+```bash
+$ kubectl top pod my-app-pod
+NAME         CPU(cores)   MEMORY(bytes)
+my-app-pod   450m         350Mi
+```
+- To manually scale the deployment:
+```bash
+$ kubectl scale deployment my-app --replicas=3
+```
+- Below is a sample deployment configuration for this scenario:
+```bash
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: my-app
+        image: nginx
+        resources:
+          requests:
+            cpu: "250m"
+          limits:
+            cpu: "500m"
+```
+### Automated Scaling with Horizontal Pod Autoscaler
+#### using imperative comamnd:
+```bash
+kubectl autoscale deployment my-app --cpu-percent=50 --min=1 --max=10
+```
+- To check the status of your HPA, run:
+```bash
+kubectl get hpa
+```
+- If you need to remove the autoscaler later, simply run:
+```bash
+kubectl delete hpa my-app
+```
+#### Declarative HPA Configuration
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+```
