@@ -379,3 +379,98 @@ spec:
         type: Utilization
         averageUtilization: 50
 ```
+### Updates In place Resize of Pods
+- This in-place update feature is in alpha and requires manual activation via the feature flag. It is anticipated that the feature will eventually progress to beta and then achieve a stable release.
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resize-demo
+  namespace: qos-example
+spec:
+  containers:
+  - name: pause
+    image: registry.k8s.io/pause:3.8
+    resizePolicy:
+    - resourceName: cpu
+      restartPolicy: NotRequired # Default, but explicit here
+    - resourceName: memory
+      restartPolicy: RestartContainer
+    resources:
+      limits:
+        memory: "200Mi"
+        cpu: "700m"
+      requests:
+        memory: "200Mi"
+        cpu: "700m"
+
+```
+### Vertical Pod Autoscaling VPA
+#### Manual Vertical Scaling
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: my-app
+        image: nginx
+        resources:
+          requests:
+            cpu: "250m"
+          limits:
+            cpu: "500m"
+```
+- **Notes:**Ensure that your cluster has the metrics server running to collect these metrics. When resource usage reaches a set threshold, you must manually update the deployment (e.g., using kubectl edit deployment) to adjust CPU requests and limits. This update replaces the running pod with a new one using the new configuration.
+#### Vertical Pod Autoscaler (VPA)
+- Note that the VPA is not included by default in Kubernetes clusters. You must deploy it separately from its GitHub repository
+```bash
+$ kubectl apply -f https://github.com/kubernetes/autoscaler/releases/latest/download/vertical-pod-autoscaler.yaml
+
+$ kubectl get pods -n kube-system | grep vpa
+vpa-admission-controller-xxxx   Running
+vpa-recommender-xxxx            Running
+vpa-updater-xxxx                Running
+```
+- Configuring the VPA:
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: my-app-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: "my-app"
+      minAllowed:
+        cpu: "250m"
+      maxAllowed:
+        cpu: "2"
+      controlledResources: ["cpu"]
+```
+- The VPA supports multiple update modes:
+-- Off: Only provides recommendations without any modifications.
+-- Initial: Applies recommendations only to newly created pods.
+-- Recreate: Evicts pods running with suboptimal resource allocations, leading to pod restarts.
+-- Auto: Currently behaves like “recreate” by evicting pods to apply updated values. In the future, auto mode may support in-place updates without restarting pods.
+
+- To view the VPA recommendations, run:
+```bash
+$ kubectl describe vpa my-app-vpa 
+```
