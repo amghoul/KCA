@@ -261,3 +261,289 @@ The kubelet is a critical component running on each node, managing node-specific
 
 It is also a best practice to generate a separate certificate for the node when it acts as a client to the API server. This certificate should include an identity format such as "system:node" to ensure the API server can assign the appropriate group membership (e.g., `system:nodes`).
 
+## View Certificate Details
+
+> Learn to inspect and verify certificates in a Kubernetes cluster, covering both manual setups and automated configurations like kubeadm.
+
+### Understanding Your Cluster Setup
+
+* If you deploy a cluster from scratch, you may generate and configure all certificates manually (as explored in a previous lesson).
+* If you use an automated provisioning tool like kubeadm, certificate generation and configuration are handled for you. In this case, Kubernetes components are deployed as pods instead of OS services.
+
+#### Native Service Deployment
+
+When Kubernetes components are deployed as native services, you can review service files to understand the certificate configuration. For example, inspect the kube-apiserver service file:
+
+```bash  theme={null}
+cat /etc/systemd/system/kube-apiserver.service
+[Service]
+ExecStart=/usr/local/bin/kube-apiserver \\
+  --advertise-address=172.17.0.32 \\
+  --allow-privileged=true \\
+  --apiserver-count=3 \\
+  --authorization-mode=Node,RBAC \\
+  --bind-address=0.0.0.0 \\
+  --client-ca-file=/var/lib/kubernetes/ca.pem \\
+  --enable-swagger-ui=true \\
+  --etcd-cafile=/var/lib/kubernetes/ca.pem \\
+  --etcd-certfile=/var/lib/kubernetes/kubernetes.pem \\
+  --etcd-keyfile=/var/lib/kubernetes/kubernetes-key.pem \\
+  --event-ttl=1h \\
+  --kubelet-certificate-authority=/var/lib/kubernetes/ca.pem \\
+  --kubelet-client-certfile=/var/lib/kubernetes/kubelet-client.crt \\
+  --kubelet-client-key=/var/lib/kubernetes/kubelet-client.key \\
+  --kubelet-https=true \\
+  --service-node-port-range=30000-32767 \\
+  --tls-cert-file=/var/lib/kubernetes/kube-apiserver.crt \\
+  --tls-private-key-file=/var/lib/kubernetes/kube-apiserver-key.pem \\
+  --v=2
+```
+
+#### Deployment Using kubeadm
+
+When using kubeadm, components such as the kube-apiserver are defined as pods in manifest files. For example, view the kube-apiserver pod manifest:
+
+```yaml  theme={null}
+cat /etc/kubernetes/manifests/kube-apiserver.yaml
+spec:
+  containers:
+    - command:
+      - kube-apiserver
+      - --authorization-mode=Node,RBAC
+      - --advertise-address=172.17.0.32
+      - --allow-privileged=true
+      - --client-ca-file=/etc/kubernetes/pki/ca.crt
+      - --disable-admission-plugins=PersistentVolumeLabel
+      - --enable-admission-plugins=NodeRestriction
+      - --enable-bootstrap-token-auth=true
+      - --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+      - --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+      - --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+      - --insecure-port=0
+      - --kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt
+      - --kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key
+      - --proxy-client-certfile=/etc/kubernetes/pki/apiserver-kubelet-client.crt
+      - --proxy-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key
+      - --request-timeout=30s
+```
+
+### Creating a Certificate Inventory
+
+When performing a certificate health check, it’s essential to create a checklist—perhaps using a spreadsheet—to record details such as:
+
+* Certificate file paths
+* Configured names and alternate names
+* Associated organizations
+* Certificate owners
+* Certificate authorities (issuers)
+* Expiration dates
+
+Begin by examining configuration files (such as the kube-apiserver manifest located in `/etc/kubernetes/manifests`) to identify the certificate files in use.
+
+For example, the kube-apiserver manifest might reveal the following options:
+
+```yaml  theme={null}
+spec:
+  containers:
+    - command:
+      - kube-apiserver
+      - --authorization-mode=Node,RBAC
+      - --advertise-address=172.17.0.32
+      - --allow-privileged=true
+      - --client-ca-file=/etc/kubernetes/pki/ca.crt
+      - --disable-admission-plugins=PersistentVolumeLabel
+      - --enable-admission-plugins=NodeRestriction
+      - --enable-bootstrap-token-auth=true
+      - --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+      - --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+      - --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+      - --etcd-servers=https://127.0.0.1:2379
+      - --insecure-port=0
+      - --kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt
+      - --kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key
+      - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+      - --proxy-client-cert-file=/etc/kubernetes/pki/front-proxy-client.crt
+      - --proxy-client-key-file=/etc/kubernetes/pki/front-proxy-client.key
+      - --secure-port=6443
+      - --service-account-key-file=/etc/kubernetes/pki/sa.pub
+      - --service-cluster-ip-range=10.96.0.0/12
+      - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+      - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+```
+
+### Inspecting Certificate Details
+
+After identifying certificate files, use OpenSSL to decode them and check their details. For example, to review the API server certificate, run:
+
+```bash  theme={null}
+openssl x509 -in /etc/kubernetes/pki/apiserver.crt -text -noout
+```
+
+This command displays:
+
+* The subject name and any alternate names
+* The validity period (including expiry dates)
+* The issuing certificate authority
+
+Repeat this process for all certificates in your Kubernetes cluster. Ensure that:
+
+* Certificate names and alternate names are correctly configured.
+* Each certificate is associated with the appropriate organization.
+* Certificates are issued by the correct certificate authority (e.g., kubeadm typically uses "Kubernetes" as the CA).
+* None of the certificates have expired.
+
+### Troubleshooting with Logs
+
+When certificate issues are suspected, reviewing logs can provide valuable insights.
+
+### For Clusters Using Native OS Services
+
+Check service logs using system commands. For example, inspect etcd logs with:
+
+```bash  theme={null}
+journalctl -u etcd.service -l
+```
+
+Below is an example excerpt from etcd logs:
+
+```plaintext  theme={null}
+2019-02-13 02:53:28.144631 I | etcdmain: etcd Version: 3.2.18
+2019-02-13 02:53:28.144680 I | etcdmain: Git SHA: eddf599c6
+2019-02-13 02:53:28.144684 I | etcdmain: Go Version: go1.8.7
+2019-02-13 02:53:28.144692 I | etcdmain: Go OS/Arch: linux/amd64
+2019-02-13 02:53:28.144696 I | etcdmain: setting maximum number of CPUs to 4, total number of available CPUs is 4
+2019-02-13 02:53:28.144734 N | etcdmain: the server is already initialized as member before, starting as etcd member...
+2019-02-13 02:53:28.146651 I | etcdserver: name = master
+...
+WARNING: 2019/02/13 02:53:30 Failed to serve client requests on 127.0.0.1:2379
+Failed to dial 127.0.0.1:2379: connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"; please retry.
+```
+
+#### For Clusters Using kubeadm
+
+Since core components are deployed as pods, retrieve logs using:
+
+* Running `kubectl logs <pod-name>` for pod-level logs.
+* If the API server or etcd is down and `kubectl` is unresponsive, list all containers with:
+
+  ```bash  theme={null}
+  docker ps -a
+  ```
+
+  Then inspect container logs:
+
+  ```bash  theme={null}
+  docker logs <container-id>
+  ```
+
+## Certificates API
+
+> This article explains managing certificates and the Certificate API in Kubernetes, detailing the lifecycle of certificate signing requests and automation for certificate rotation.
+
+<Callout icon="lightbulb" color="#1CB2FE">
+  As the number of users increases, manually signing certificate requests becomes impractical. Kubernetes addresses this challenge with a built-in Certificates API that automates CSR management and certificate rotation.
+</Callout>
+
+### Managing Certificate Signing Requests (CSRs)
+
+The Kubernetes Certificates API allows users to submit their CSRs via an API call, creating a CertificateSigningRequest object. Administrators can then review and approve these requests using `kubectl` commands. Once approved, Kubernetes signs the certificate using the CA's key pair. The signed certificate is then available for extraction and distribution to the requesting user.
+#### Step 1: User Generates Private Key and CSR
+
+A user creates a private key and generates a certificate signing request using the following command:
+
+```bash  theme={null}
+openssl genrsa -out jane.key 2048
+```
+
+The user then sends the CSR to the administrator.
+
+#### Step 2: Administrator Creates a CSR Object
+
+The administrator creates a CertificateSigningRequest object with a manifest file. In the manifest, the `kind` is set to CertificateSigningRequest, and the `spec` section includes the encoded certificate signing request (CSR must be encoded in base64). Below is an example manifest:
+
+```yaml  theme={null}
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: jane
+spec:
+  expirationSeconds: 600 # seconds
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNUUw0tLS0KTUl1Q1dEQ0NBVUFDQVFBd0V6RVJHQTFVdU0R6VjRkNHTQ0RzU0aU1yY3I0d11qYXl0c1RUVFRlQiVtNS0tLS0tLkRvd25nUIDhUnQ0dXJ0YW50YmlsZWdslNQZHYR0W1nNHh1RVFLdLtJPG0tLkFUTUJQS0w0UlRqS1JlTVUyZUl3bTJaSE44TG5NQ2czTWc9PQ==
+```
+
+Administrators can list pending CSRs with the following command:
+
+```bash  theme={null}
+kubectl get csr
+```
+
+The output may resemble:
+
+```plaintext  theme={null}
+NAME      AGE   SIGNERNAME                                   REQUESTOR                  REQUESTEDDURATION   CONDITION
+jane      10m   kubernetes.io/kube-apiserver-client         admin@example.com          10m                 Pending
+```
+
+#### Step 3: Approving the CSR
+
+To approve the CSR, run:
+
+```bash  theme={null}
+kubectl certificate approve jane
+```
+
+After approval, Kubernetes signs the CSR with the CA key pair, and the certificate is embedded in the CertificateSigningRequest object's YAML output as a base64 encoded string. You can decode it using base64 utilities to view the plain text certificate.
+
+Below is an example output of a CertificateSigningRequest object:
+
+```yaml  theme={null}
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  creationTimestamp: 2019-02-13T16:36:43Z
+  name: new-user
+spec:
+  groups:
+    - system:masters
+    - system:authenticated
+  expirationSeconds: 600
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  username: kubernetes-admin
+status:
+  certificate: L$0tL1CRUdJTiBDRVJUSUZJQ0FURS9tL0t1SURDakNDQWZLZ0F3SUJBZ0lVRmwyQ2wXYXoxalW5M3JNVisreFRYQYouW3dnd0RWpL1pJaHZjTkFRRUwkQkFBd0ZVUnRVMVhQTFRUVF4TUhM1ZpHkdVpMjxkF1RncweE9UQ1NVE14TmpNeU1EQmFgdGl0dY0ZFBl2ajNuSXY3eFd3I1Rm5u440c0t520vXukwTFM5V29ge1hHZdWCMlEZ2FOMVVMRFBXTVhjN09FVnVjSk1k4weRUVtR5tD11zWeHVjS1h6g1dV0pMediMUGbXYFKWVKWMVmBjRVRTY3dod2xiO1ND0kLS0tL1F0kQg0V5VElSGUNBVEUt
+  conditions:
+    - lastUpdateTime: 2019-02-13T16:37:21Z
+      message: This CSR was approved by kubectl certificate approve.
+      reason: KubectlApprove
+      type: Approved
+```
+
+### The Role of the Controller Manager
+
+Within the Kubernetes control plane, components such as the API Server, Scheduler, and Controller Manager work together. However, all certificate-related operations—such as CSR approval and signing—are managed by the Controller Manager.
+
+The Controller Manager includes dedicated controllers for CSR approval and CSR signing tasks. Since signing certificates requires access to the CA's root certificate and private key, its configuration specifies the file paths to these credentials. For example, the Controller Manager’s configuration file might include settings like the following:
+
+```yaml  theme={null}
+cat /etc/kubernetes/manifests/kube-controller-manager.yaml
+spec:
+  containers:
+  - command:
+      - kube-controller-manager
+      - --address=127.0.0.1
+      - --cluster-signing-cert-file=/etc/kubernetes/pki/ca.crt
+      - --cluster-signing-key-file=/etc/kubernetes/pki/ca.key
+      - --controllers=*,bootstrapsigner,tokencleaner
+      - --kubeconfig=/etc/kubernetes/controller-manager.conf
+      - --leader-elect=true
+      - --root-ca-file=/etc/kubernetes/pki/ca.crt
+      - --service-account-private-key-file=/etc/kubernetes/pki/sa.key
+      - --use-service-account-credentials=true
+```
