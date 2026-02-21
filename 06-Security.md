@@ -796,3 +796,102 @@ The decoded output will resemble:
 MIICDCCAuCAQAwE...
 -----END CERTIFICATE-----
 ```
+## Authorization
+
+> This article explores authentication and authorization in Kubernetes, detailing user access, permissions, and various authorization mechanisms like RBAC and external tools.
+
+When sharing a cluster across different organizations or teams using namespaces, authorization restricts users to their designated namespaces. Kubernetes supports multiple authorization mechanisms, including:
+
+* Node Authorization
+* Attribute-Based Authorization
+* Role-Based Access Control (RBAC)
+* Webhook Authorization
+  
+### Node Authorizor
+The Kubernetes API Server is the central component accessed by both management users and internal components, such as kubelets, which retrieve and report metadata about services, endpoints, nodes, and pods.
+
+Requests from kubelets—typically using certificates with names prefixed by `"system:node"` as part of the `system:nodes` group—are authorized by a special component known as the `node authorizer`. 
+
+<Callout icon="lightbulb" color="#1CB2FE">
+  Kubernetes supports several authorization strategies to meet diverse security requirements. Always select the most appropriate mechanism for your cluster’s needs.
+</Callout>
+
+### Attribute-Based Authorization
+
+Attribute-based authorization associates specific users or groups with a defined set of permissions. For example, you can grant a user called "dev-user" permissions to view, create, and delete pods. This is achieved by creating a policy file in JSON format and passing it to the API server. Consider the following example policy file:
+
+```json  theme={null}
+{"kind": "Policy", "spec": {"user": "dev-user", "namespace": "*", "resource": "pods", "apiGroup": "*"}}
+{"kind": "Policy", "spec": {"user": "dev-user-2", "namespace": "*", "resource": "pods", "apiGroup": "*"}}
+{"kind": "Policy", "spec": {"group": "dev-users", "namespace": "*", "resource": "pods", "apiGroup": "*"}}
+{"kind": "Policy", "spec": {"user": "security-1", "namespace": "*", "resource": "csr", "apiGroup": "*"}}
+```
+
+Each time security requirements change, you must manually update this policy file and restart the Kube API Server. This manual process can be tedious and set the stage for more streamlined methods such as Role-Based Access Control (RBAC).
+
+### Role-Based Access Control (RBAC)
+
+RBAC simplifies user permission management by defining roles instead of directly associating permissions with individual users. For example, you can create a "developer" role that encompasses only the necessary permissions for application deployment. Developers are then associated with this role, and modifications in user access can be handled by updating the role, affecting all associated users immediately.
+
+RBAC is considered the standard method for managing access within a Kubernetes cluster.
+
+### External Authorization Mechanisms
+
+If you prefer managing authorization externally rather than with built-in Kubernetes mechanisms, third-party tools like [Open Policy Agent (OPA)](https://www.openpolicyagent.org/) are an excellent choice. OPA can handle both admission control and authorization by processing user details and access requirements sent via API calls from Kubernetes. Based on OPA’s response, access is either granted or denied.
+
+### AlwaysAllow and AlwaysDeny Modes
+
+Kubernetes also supports two basic authorization modes:
+
+* **AlwaysAllow:** Permits all requests without performing any authorization checks.
+* **AlwaysDeny:** Denies all requests.
+
+These modes are configured using the `authorization-mode` option on the Kube API Server and are crucial when determining which authorization mechanism is active. In cases where no mode is specified, AlwaysAllow is used by default.
+
+Below is an example configuration using AlwaysAllow:
+
+```bash  theme={null}
+ExecStart=/usr/local/bin/kube-apiserver \\
+  --advertise-address=${INTERNAL_IP} \\
+  --allow-privileged=true \\
+  --apiserver-count=3 \\
+  --authorization-mode=AlwaysAllow \\
+  --bind-address=0.0.0.0 \\
+  --enable-swagger-ui=true \\
+  --etcd-cafile=/var/lib/kubernetes/ca.pem \\
+  --etcd-certfile=/var/lib/kubernetes/apiserver-etcd-client.crt \\
+  --etcd-keyfile=/var/lib/kubernetes/apiserver-etcd-client.key \\
+  --etcd-servers=https://127.0.0.1:2379 \\
+  --event-ttl=1h \\
+  --kubelet-certificate-authority=/var/lib/kubernetes/ca.pem \\
+  --kubelet-client-certificate=/var/lib/kubernetes/apiserver-etcd-client.crt \\
+  --kubelet-client-key=/var/lib/kubernetes/apiserver-etcd-client.key \\
+  --service-node-port-range=30000-32767 \\
+  --client-ca-file=/var/lib/kubernetes/ca.pem \\
+  --tls-cert-file=/var/lib/kubernetes/apiserver.crt \\
+  --tls-private-key-file=/var/lib/kubernetes/apiserver.key \\
+  -v=2
+```
+
+You can also specify a comma-separated list of multiple authorization modes. For example, to configure node authorization, RBAC, and webhook authorization, set the parameter as follows:
+
+```bash  theme={null}
+ExecStart=/usr/local/bin/kube-apiserver \\
+  --advertise-address=${INTERNAL_IP} \\
+  --allow-privileged=true \\
+  --apiserver-count=3 \\
+  --authorization-mode=Node,RBAC,Webhook \\
+  --bind-address=0.0.0.0 \\
+  --enable-swagger-ui=true \\
+  --etcd-cafile=/var/lib/kubernetes/ca.pem \\
+  --etcd-certfile=/var/lib/kubernetes/apiserver-etcd-client.crt \\
+  --etcd-keyfile=/var/lib/kubernetes/apiserver-etcd-client.key \\
+  --etcd-servers=https://127.0.0.1:2379 \\
+  --event-ttl=1h \\
+  --kubelet-certificate-authority=/var/lib/kubernetes/ca.crt \\
+  --tls-cert-file=/var/lib/kubernetes/apiserver.crt \\
+  --tls-private-key-file=/var/lib/kubernetes/apiserver.key \\
+  --v=2
+```
+
+When multiple modes are configured, each request is processed sequentially in the order specified. For example, a user’s request is first evaluated by the node authorizer. If the request does not pertain to node-specific actions and is consequently denied, it is then passed to the next module, such as RBAC. Once a module approves the request, further checks are bypassed and the user is granted access.
