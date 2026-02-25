@@ -1659,3 +1659,58 @@ spec:
 <Callout icon="triangle-alert" color="#FF6B6B">
   Ensure that your egress rules cover all required outbound connections. Missing an egress rule may inadvertently block critical communication between your services.
 </Callout>
+
+## Kubectx and Kubens - Command Line Utilities
+Through out the course, you have had to work on several different namespaces in the practice lab environments. In some labs, you also had to switch between several contexts.
+
+While this is excellent for hands-on practice, in a real “live” kubernetes cluster implemented for production, there could be a possibility of often switching between a large number of namespaces and clusters.
+
+This is where command line tools such as kubectx and kubens come in to picture.
+
+### Kubectx:
+
+With this tool, you don't have to make use of lengthy “kubectl config” commands to switch between contexts. This tool is particularly useful to switch context between clusters in a multi-cluster environment.
+
+ - Installation:
+```bash
+sudo git clone https://github.com/ahmetb/kubectx /opt/kubectx
+sudo ln -s /opt/kubectx/kubectx /usr/local/bin/kubectx
+```
+To list all contexts:
+```bash
+kubectx
+```
+To switch to a new context:
+```bash
+kubectx <context_name>
+```
+To switch back to previous context:
+```bash
+kubectx -
+```
+To see current context:
+```bash
+kubectx -c
+```
+
+### Kubens:
+
+This tool allows users to switch between namespaces quickly with a simple command.
+
+Installation:
+```bash
+sudo git clone https://github.com/ahmetb/kubectx /opt/kubectx
+sudo ln -s /opt/kubectx/kubens /usr/local/bin/kubens
+```
+
+Syntax:
+
+To switch to a new namespace:
+```bash
+kubens <new_namespace>
+```
+
+To switch back to previous namespace:
+```bash
+kubens -
+```
