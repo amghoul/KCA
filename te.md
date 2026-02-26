@@ -1,104 +1,126 @@
-## Developing network policies
+## Custom Resource Definition CRD 2025 Updates
 
-> This article explores advanced network policy configurations in Kubernetes to secure database pods by controlling ingress and egress traffic.
+> This article introduces Custom Resource Definitions and custom controllers in Kubernetes to extend cluster functionality and manage tailored resources.
 
-### Blocking All Ingress Traffic to the Database Pod
+## Kubernetes Resources and Controllers
 
-To begin, we block all incoming traffic to the database pod. This is achieved by creating a network policy that targets the database pod using labels and selectors. In our example, the database pod is labeled `role: db`. The following YAML file defines a policy that denies all ingress traffic by default since no specific ingress rules are provided:
+When you create a Deployment in Kubernetes, the API server stores its configuration in the etcd datastore. 
+
+When the Deployment is created, Kubernetes automatically launches the specified number of Pods (3 in this example) according to the replica count. This behavior is managed by the deployment controller, a key built-in process that continuously monitors cluster resources to ensure the actual state matches your manifest's desired state.
+
+Under the hood, the deployment controller creates a ReplicaSet, which in turn manages the creation of Pods. Although the controller is implemented in Go as a part of the Kubernetes source code, you do not need to understand its inner workings to effectively use it.
+
+### Custom Resources: The Flight Ticket Example
+
+Imagine managing flight ticket bookings in Kubernetes with a custom resource. In this scenario, you define an object of kind FlightTicket to specify the details for booking a flight ticket. Initially, the custom resource is defined as follows:
 
 ```yaml  theme={null}
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
+apiVersion: flights.com/v1
+kind: FlightTicket
 metadata:
-  name: db-policy
+  name: my-flight-ticket
 spec:
-  podSelector:
-    matchLabels:
-      role: db
-  policyTypes:
-  - Ingress
+  from: Mumbai
+  to: London
+  number: 2
+```
+
+Attempting to create this resource without proper configuration results in an error, as Kubernetes does not recognize the FlightTicket kind by default:
+
+```bash  theme={null}
+kubectl create -f flightticket.yml
+# Output: no matches for kind "FlightTicket" in version "flights.com/v1"
+```
+
+The error occurs because Kubernetes must be explicitly informed about the new resource type through a Custom Resource Definition (CRD).
+
+***
+
+### Defining a Custom Resource with CRD
+
+A CRD informs Kubernetes about new custom resources, enabling their creation and management. Below is an example of how to define a CRD for a FlightTicket resource:
+
+```yaml  theme={null}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: flighttickets.flights.com
+spec:
+  scope: Namespaced
+  group: flights.com
+  names:
+    kind: FlightTicket
+    singular: flightticket
+    plural: flighttickets
+    shortNames:
+      - ft
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                from:
+                  type: string
+                to:
+                  type: string
+                number:
+                  type: integer
+                  minimum: 1
 ```
 
 <Callout icon="lightbulb" color="#1CB2FE">
-  If no ingress rules are specified, Kubernetes treats the policy as a complete block for incoming traffic.
+  In this CRD definition:
+
+  * The API version is set to `apiextensions.k8s.io/v1`.
+  * The metadata name is `flighttickets.flights.com`.
+  * The resource is defined as namespaced.
+  * The API group is `flights.com` and the kind is `FlightTicket`.
+  * Singular, plural, and short names (ft) are specified.
+  * Version `v1` is marked as both served and the storage version.
+  * An OpenAPI v3 schema validates the `spec` fields: `from`, `to`, and `number`.
 </Callout>
 
-### Allowing Ingress Traffic from the API Pod
+After applying the CRD, you can successfully create the custom resource:
 
-The next step is to allow ingress traffic from the API pod on port 3306. Because responses to permitted traffic are automatically allowed, configuring an ingress rule is sufficient. In this rule, the source is defined by pod selectors (and optionally namespace selectors) while the destination port is specified.
-
-For instance, to allow traffic only from pods labeled `name: api-pod` within namespaces labeled `prod`—and also permit traffic from a backup server with IP `192.168.5.10`—update the network policy as follows:
-
-```yaml  theme={null}
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: db-policy
-spec:
-  podSelector:
-    matchLabels:
-      role: db
-  policyTypes:
-  - Ingress
-  ingress:
-  - from:
-    - podSelector:
-        matchLabels:
-          name: api-pod
-      namespaceSelector:
-        matchLabels:
-          name: prod
-    - ipBlock:
-        cidr: 192.168.5.10/32
-  ports:
-  - protocol: TCP
-    port: 3306
+```bash  theme={null}
+kubectl create -f flightticket-custom-definition.yml
+# Output: customresourcedefinition "flighttickets.flights.com" created
 ```
 
-In this configuration, the first entry under the `from` section restricts traffic to API pods in the production namespace (an AND condition). The second entry allows an external backup server by specifying its IP block.
+Now, when you create, list, and delete the custom resource, the commands work seamlessly:
+
+```bash  theme={null}
+kubectl create -f flightticket.yml
+kubectl get flightticket
+# Output:
+# NAME             STATUS
+kubectl delete -f flightticket.yml
+# Output: flightticket "my-flight-ticket" deleted
+```
+
+Additionally, using the short name confirms that the resource is available:
+
+```bash  theme={null}
+kubectl api-resources
+# Relevant output:
+# NAME             SHORTNAMES   APIGROUP     NAMESPACED   KIND
+# flighttickets    ft           flights.com  true         FlightTicket
+```
+
+***
+
+### Beyond Data Storage: Custom Controllers
+
+While a CRD and its corresponding custom resource primarily store data in etcd, you often need to automate real operations—such as booking a flight ticket through an external service. This is where a custom controller comes into play.
+
+A custom controller, typically written in Go, watches for changes to FlightTicket resources and triggers the appropriate actions (e.g., calling an external API) when a resource is created, updated, or deleted. Without this controller, the FlightTicket remains merely a data entry in etcd without any external effect.
 
 <Callout icon="lightbulb" color="#1CB2FE">
-  Combining pod selectors with namespace selectors ensures that the rule applies only to the intended pods within the correct namespace.
-</Callout>
-
-### Configuring Egress Traffic
-
-In scenarios where the database pod must initiate outbound connections (for example, sending backups to an external server), an egress rule becomes necessary. To support both ingress and egress traffic, include `Egress` in the `policyTypes` and specify an egress rule.
-
-The revised policy below permits the database pod to send traffic to a backup server at IP `192.168.5.10` on port `80` while still restricting all other outbound connections:
-
-```yaml  theme={null}
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: db-policy
-spec:
-  podSelector:
-    matchLabels:
-      role: db
-  policyTypes:
-  - Ingress
-  - Egress
-  ingress:
-  - from:
-    - podSelector:
-        matchLabels:
-          name: api-pod
-      namespaceSelector:
-        matchLabels:
-          name: prod
-  ports:
-  - protocol: TCP
-    port: 3306
-  egress:
-  - to:
-    - ipBlock:
-        cidr: 192.168.5.10/32
-    ports:
-    - protocol: TCP
-      port: 80
-```
-
-<Callout icon="triangle-alert" color="#FF6B6B">
-  Ensure that your egress rules cover all required outbound connections. Missing an egress rule may inadvertently block critical communication between your services.
+  In future lessons, we will walk through the process of creating a custom controller that can effectively integrate these resources with your external systems.
 </Callout>
