@@ -521,3 +521,341 @@ should return a response like:
 ```text  theme={null}
 Welcome to nginx!
 ```
+## Pod Networking
+
+> This article explains pod networking in Kubernetes, covering implementation, inter-pod communication, and the role of CNI in managing network interfaces.
+
+<Callout icon="lightbulb" color="#1CB2FE">
+  * Each pod gets a unique IP address.
+  * Every pod on a node can reach every other pod on that node using its IP address.
+  * Pods across different nodes can communicate using a consistent addressing scheme.
+
+  These requirements ensure that Kubernetes can support both local (node-level) and cross-node communications without relying on NAT rules.
+</Callout>
+
+### Understanding the Basics
+
+#### Setting Up a Simple Bridge Network
+
+Below is an example that sets up a simple bridge network and connects network namespaces:
+
+```bash  theme={null}
+ip link add v-net-0 type bridge
+ip link set dev v-net-0 up
+ip addr add 192.168.15.5/24 dev v-net-0
+ip link add veth-red type veth peer name veth-red-br
+ip link set veth-red netns red
+ip -n red addr add 192.168.15.1 dev veth-red
+ip -n red link set veth-red up
+ip link set veth-red-br master v-net-0
+ip netns exec blue ip route add 192.168.1.0/24 via 192.168.15.5
+iptables -t nat -A POSTROUTING -s 192.168.15.0/24 -j MASQUERADE
+```
+
+Imagine a cluster with three nodes where every node runs a combination of management and workload pods. Although node roles are flexible, the networking concepts remain consistent across nodes.
+
+#### Cluster Network Planning
+
+Consider the following plan for a three-node cluster:
+
+1. **External Network Configuration**: Each node has an IP in the 192.168.1.0 series (e.g., 192.168.1.11, 192.168.1.12, and 192.168.1.13).
+2. **Container Network Namespaces**: Kubernetes creates unique network namespaces when containers start. These namespaces must connect to a network to allow inter-container communication.
+3. **Bridge Networks on Each Node**: Create a bridge network on every node. Assign a distinct subnet to each bridge, such as:
+   * Node one: 10.244.1.0/24
+   * Node two: 10.244.2.0/24
+   * Node three: 10.244.3.0/24
+
+When a container is created, a virtual cable (veth pair) connects its network namespace to the node’s bridge network. One end is inserted into the container’s namespace and the other attaches to the node’s bridge. An IP address is assigned (for example, 10.244.1.2), and a route to the default gateway is configured before enabling the interface.
+
+Below is a sample snippet from a script that connects a container to the network:
+
+```bash  theme={null}
+# Create veth pair
+ip link add <veth-in-host> type veth peer name <veth-in-namespace>
+# Attach one end to the container’s namespace
+ip link set <veth-in-namespace> netns <namespace>
+# Attach the other end to the bridge
+ip link set <veth-in-host> master <bridge>
+# Assign IP address to the container’s interface
+ip -n <namespace> addr add <IP-address>/24 dev <veth-in-namespace>
+# Add default route in the container’s namespace
+ip -n <namespace> route add default via <bridge-IP>
+# Bring up the container’s interface
+ip -n <namespace> link set <veth-in-namespace> up
+```
+
+Executing this script on each node ensures that all containers receive an IP address and are connected to their respective internal networks.
+
+#### Cross-Node Communication
+
+One of the challenges is enabling communication between pods on different nodes. For example, if a pod with IP 10.244.1.2 on node 1 attempts to ping a pod with IP 10.244.2.2 on node 2, the ping may initially fail due to unknown routes between subnets:
+
+```bash  theme={null}
+bluepod$ ping 10.244.2.2
+Connect: Network is unreachable
+```
+
+To resolve this, add a route on node 1 that directs traffic for 10.244.2.2 via node 2’s external IP (e.g., 192.168.1.12):
+
+```bash  theme={null}
+node1$ ip route add 10.244.2.2 via 192.168.1.12
+```
+
+After configuring the routing, the ping command should succeed:
+
+```bash  theme={null}
+bluepod$ ping 10.244.2.2
+64 bytes from 10.244.2.2: icmp_seq=1 ttl=63 time=0.587 ms
+64 bytes from 10.244.2.2: icmp_seq=2 ttl=63 time=0.466 ms
+```
+
+Similarly, add these routes on all nodes to cover all pod subnets:
+
+```bash  theme={null}
+node1$ ip route add 10.244.2.2 via 192.168.1.12
+node1$ ip route add 10.244.3.2 via 192.168.1.13
+node2$ ip route add 10.244.1.2 via 192.168.1.11
+node2$ ip route add 10.244.3.2 via 192.168.1.13
+node3$ ip route add 10.244.1.2 via 192.168.1.11
+node3$ ip route add 10.244.2.2 via 192.168.1.12
+```
+
+<Callout icon="triangle-alert" color="#FF6B6B">
+  Manually configuring routes on every host is impractical for large-scale deployments. A more scalable solution involves configuring a centralized router to manage all subnet routes and setting each node's default gateway to this router.
+</Callout>
+
+### Integrating Container Network Interface (CNI)
+
+In our lab setup, we executed scripts manually to configure pod networking. However, in a production Kubernetes environment where thousands of pods may be created per minute, this manual approach is not feasible.
+
+This is where the Container Network Interface (CNI) becomes essential. CNI specifies how Kubernetes should invoke a networking script each time a pod is created. To conform with CNI standards, the networking script must have:
+
+* An "add" section to connect the container to the network.
+* A "delete" section to disconnect the container, remove interfaces, and free up the IP address.
+
+When the container runtime launches a container, it uses the CNI configuration (provided as a command-line argument) to execute the relevant script with the command "add" and pass the container’s name and namespace identifier.
+
+Below is an example snippet that illustrates the CNI execution process:
+
+```bash  theme={null}
+ip -n <namespace> link set <interface> up
+ip link del <interface>
+./net-script.sh add <container> <namespace>
+```
+
+## CNI in kubernetes
+
+> This lesson explores how Kubernetes uses the Container Network Interface to manage container networking and configure network plugins.
+
+As discussed in previous lessons, the CNI specifies the responsibilities of the container runtime. In Kubernetes, container runtimes such as Containerd or CRI-O create the container network namespaces and attach them to the correct network by invoking the appropriate network plugin. Although Docker was initially the primary container runtime, it has largely been replaced by Containerd as an abstraction layer.
+
+### Configuring CNI Plugins in Kubernetes
+
+When a container is created, the container runtime invokes the necessary CNI plugin to attach the container to the network. Two common runtimes that demonstrate how this process works are Containerd and CRI-O.
+
+<Callout icon="lightbulb" color="#1CB2FE">
+  Container runtimes look for CNI plugin executables in the `/opt/cni/bin` directory, while network configuration files are read from the `/etc/cni/net.d` directory.
+</Callout>
+
+### Directory Structure for CNI Plugins and Configuration
+
+The network plugins reside in `/opt/cni/bin`, and the configuration files that dictate which plugin to use are stored in `/etc/cni/net.d`. Typically, the container runtime selects the configuration file that appears first in alphabetical order.
+
+For example, you might see the following directories:
+
+```bash  theme={null}
+ls /opt/cni/bin
+```
+
+```bash  theme={null}
+bridge  dhcp  flannel  host-local  ipvlan  loopback  macvlan  portmap  ptp  sample  tuning  vlan  weave-ipam  weave-net  weave-plugin-2.2.1
+```
+
+```bash  theme={null}
+ls /etc/cni/net.d
+```
+
+```bash  theme={null}
+10-bridge.conflist
+```
+
+In this case, the container runtime chooses the "bridge" configuration file.
+
+#### Understanding a CNI Bridge Configuration File
+
+A typical CNI bridge configuration file, adhering to the CNI standard, might look like this:
+
+```bash  theme={null}
+cat /etc/cni/net.d/10-bridge.conf
+```
+
+```json  theme={null}
+{
+  "cniVersion": "0.2.0",
+  "name": "mynet",
+  "type": "bridge",
+  "bridge": "cni0",
+  "isGateway": true,
+  "ipMasq": true,
+  "ipam": {
+    "type": "host-local",
+    "subnet": "10.22.0.0/16",
+    "routes": [
+      { "dst": "0.0.0.0/0" }
+    ]
+  }
+}
+```
+
+In this configuration:
+
+* The `"name"` field (e.g., `"mynet"`) represents the network name.
+* The `"type"` field set to `"bridge"` indicates the use of a bridge plugin.
+* The `"bridge"` field (e.g., `"cni0"`) specifies the network bridge's name.
+* The `"isGateway"` flag designates whether the bridge interface should have an IP address to function as a gateway.
+* The `"ipMasq"` option enables network address translation (NAT) through IP masquerading.
+* The `"ipam"` (IP Address Management) section uses `"host-local"` to allocate IP addresses from the specified subnet (`"10.22.0.0/16"`) and defines a default route.
+
+## CNI weave
+
+> This article provides a comprehensive guide on the Weaveworks CNI plugin, covering its architecture, functionality, and deployment in Kubernetes environments.
+
+Previously, we examined a custom CNI script that handled networking tasks through commands similar to the following:
+
+```bash  theme={null}
+./net-script.sh add <container> <namespace>
+# Create veth pair
+# Attach veth pair
+# Assign IP Address
+# Bring Up Interface
+ip -n <namespace> link set ……
+# Delete veth pair
+ip link del ……
+```
+
+Instead of using our custom approach, the Weave plugin automates and streamlines the network setup. Let's dive in to understand how Weave functions.
+
+### Manual Networking vs. Weave CNI
+
+In traditional networking, the routing table on each host maps different networks. When a packet moves from one pod to another, it usually exits through the network and is directed by a router to the destination node hosting the target pod. Although this works well in small-scale networks, scaling to hundreds of nodes and pods makes managing numerous routing table entries extremely challenging.
+
+Imagine a Kubernetes cluster as a company with different office sites (nodes). Each office has various departments (pods). Initially, a package (packet) may be delivered using a simple routing method. However, as the company expands across regions and countries, maintaining a comprehensive routing table becomes unmanageable.
+
+### How Weave Works
+
+The Weave CNI plugin deploys an agent on each Kubernetes node. These agents exchange information about nodes, networks, and pods to maintain a complete topology of the cluster. Each node runs a Weave bridge, allowing dynamic IP address assignment. In the upcoming practice lesson, you will determine the exact range of IP addresses assigned by Weave.
+
+Keep in mind that a pod may be connected to multiple bridge networks (e.g., both the Weave bridge and the Docker bridge). The container's routing configuration controls the path a packet follows, and Weave ensures that each pod has the correct route through its assigned agent. When sending a packet to a pod on another node, Weave intercepts, encapsulates, and routes it using updated source and destination details. At the destination node, the corresponding Weave agent decapsulates the packet and delivers it to the intended pod.
+
+### Deploying Weave on a Kubernetes Cluster
+
+Deploying Weave on a Kubernetes cluster is straightforward. Once you have set up your base Kubernetes environment—with nodes, inter-node networking, and control plane components—you can deploy the Weave plugin using a single command. This command deploys the necessary components (Weave peers) as pods on every node, often configured via a DaemonSet.
+
+Here's an example command to inspect the routing settings within a running pod:
+
+```bash  theme={null}
+kubectl exec busybox -- ip route
+default via 10.244.1.1 dev eth0
+```
+
+To deploy the Weave components, run:
+
+```bash  theme={null}
+kubectl apply -f https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s.yaml
+```
+
+The output should confirm successful deployment:
+
+```bash  theme={null}
+serviceaccount/weave-net created
+clusterrole.rbac.authorization.k8s.io/weave-net created
+clusterrolebinding.rbac.authorization.k8s.io/weave-net created
+role.rbac.authorization.k8s.io/weave-net created
+rolebinding.rbac.authorization.k8s.io/weave-net created
+daemonset.extensions/weave-net created
+```
+
+If you are using kubeadm along with the Weave plugin, you will see the Weave peers as pods on each node. For troubleshooting or further verification, list the pods in the kube-system namespace:
+
+```bash  theme={null}
+kubectl get pods -n kube-system
+```
+
+## Service Networking
+
+> This article explains service networking in Kubernetes, covering pod and service communication, service types, and how traffic is managed within a cluster.
+
+### Understanding Pod and Service Networking
+
+Pod networking involves creating bridge networks on each node where pods receive individual namespaces, attach network interfaces, and obtain IP addresses from the node-specific subnet. This setup ensures that pods across different nodes can communicate via dedicated routes or overlay networks. However, rather than configuring pod-to-pod communication directly, you typically set up services. Services allow you to expose and reach applications with an assigned IP address and DNS name, simplifying internal and external access.
+
+### Service Types: ClusterIP vs. NodePort
+
+#### ClusterIP Services
+
+By default, when a service is created, it is accessible to all pods in the cluster, regardless of the node they run on. This default service type, called ClusterIP, is ideal for applications meant strictly for internal access. For example, if your orange pod hosts a database, a ClusterIP service ensures internal connectivity.
+
+#### NodePort Services
+
+When you need a service to be accessible from outside the cluster, such as when a purple pod hosts a web application, you use a NodePort service. This service still receives an internal cluster IP for intra-cluster communication, but it also exposes the application on a specific port on every node. This allows external users or applications to reach the service without direct access to individual pod IPs.
+
+### How Kubernetes Manages Service Networking
+
+Let’s start with a clean slate. Picture a three-node Kubernetes cluster that has no pods or services deployed yet. Each node runs a Kubelet process, responsible for pod creation by communicating with the Kube API Server and invoking the CNI plugin to configure networking. In parallel, every node also runs a Kube Proxy, which monitors cluster changes via the API Server and sets up forwarding rules whenever a new service is created.
+
+Unlike pods that have their dedicated network interfaces, services are virtual constructs spanning the entire cluster. When you create a service object, Kubernetes automatically assigns it an IP address from a predefined range (set via the Kube API Server’s --service-cluster-ip-range option). The kube-proxy on each node then configures the appropriate forwarding rules so that any traffic targeted at the service's IP and port is correctly routed to the backend pod.
+
+Whenever a pod sends traffic to a service IP, the kube-proxy rules step in to forward that traffic to the chosen backend pod. These rules are dynamically updated as services are created or removed. Kube Proxy supports several proxy modes, including user space, iptables, and IPVS (with iptables being the default unless specified otherwise).
+
+Here’s an example command to start the kube-proxy with a specific proxy mode:
+
+```bash  theme={null}
+kube-proxy --proxy-mode [userspace | iptables | ipvs] …
+```
+
+<Callout icon="lightbulb" color="#1CB2FE">
+  By default, kube-proxy uses iptables mode. Ensure your configuration specifies the intended mode using the --proxy-mode option whenever necessary.
+</Callout>
+
+## Practical Example: Service IP Assignment and Traffic Forwarding
+
+Consider a scenario where a pod named "db" is running on node-1 with the IP address 10.244.1.2. To expose this pod inside the cluster, you create a ClusterIP service named "db-service." When the service is created, Kubernetes assigns it an IP address (for example, 10.103.132.104) from the designated service cluster IP range.
+
+```bash  theme={null}
+kubectl get pods -o wide
+NAME   READY   STATUS    RESTARTS   AGE   IP           NODE
+db     1/1     Running   0          14h   10.244.1.2   node-1
+
+kubectl get service
+NAME         TYPE        CLUSTER-IP      PORT(S)    AGE
+db-service   ClusterIP   10.103.132.104  3306/TCP   12h
+```
+
+In some clusters, the default service cluster IP range might be 10.0.0.0/24, but in other setups the API Server may be configured with a different range such as --service-cluster-ip-range=10.96.0.0/12. This means that service IPs can fall anywhere between 10.96.0.0 and 10.111.255.255. Meanwhile, the pod network CIDR might be something like 10.244.0.0/16, ensuring that pod IP addresses range between 10.244.0.0 and 10.244.255.255. It is crucial that these ranges do not overlap.
+
+When the "db-service" is created, kube-proxy establishes corresponding iptables rules so that traffic arriving at the service IP on port 3306 is redirected to the pod’s IP on the same port:
+
+```bash  theme={null}
+iptables -L -t nat | grep db-service
+KUBE-SVC-XA5OGUC7YRHOS3PU  tcp  --  anywhere  10.103.132.104  /* default/db-service: cluster IP */ tcp dpt:3306
+DNAT                      tcp  --  anywhere  anywhere  /* default/db-service: */ tcp to:10.244.1.2:3306
+KUBE-SEP-JBWCWHHQM57V2WN7  all  --  anywhere  anywhere  /* default/db-service: */
+```
+
+This DNAT (Destination Network Address Translation) rule ensures that any traffic to the service IP (10.103.132.104) on port 3306 is redirected to the pod’s IP (10.244.1.2).
+
+Similarly, a NodePort service would have iptables rules that forward traffic arriving on a designated port on every node to the appropriate backend pods.
+
+## Verifying kube-proxy Operation
+
+To check which proxy mode your kube-proxy is using, you can inspect the kube-proxy logs:
+
+```bash  theme={null}
+cat /var/log/kube-proxy.log
+```
+
+<Callout icon="lightbulb" color="#1CB2FE">
+  Note that the location of the kube-proxy log file may vary depending on your installation. If you do not see the expected entries, verify that the verbosity level of kube-proxy is set appropriately.
+</Callout>
+
+

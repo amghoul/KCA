@@ -1,203 +1,78 @@
-## Prerequisite Docker Networking
+## Service Networking
 
-> This article provides an overview of Docker networking options, including modes like none, host, and bridge, and explains container connectivity and port mapping.
+> This article explains service networking in Kubernetes, covering pod and service communication, service types, and how traffic is managed within a cluster.
 
-### Docker Networking Modes
+### Understanding Pod and Service Networking
 
-When you run a container, Docker provides several networking modes to tailor connectivity to your application's needs:
+Pod networking involves creating bridge networks on each node where pods receive individual namespaces, attach network interfaces, and obtain IP addresses from the node-specific subnet. This setup ensures that pods across different nodes can communicate via dedicated routes or overlay networks. However, rather than configuring pod-to-pod communication directly, you typically set up services. Services allow you to expose and reach applications with an assigned IP address and DNS name, simplifying internal and external access.
 
-#### None Network
+### Service Types: ClusterIP vs. NodePort
 
-With the "none" network mode, the container is not attached to any network. As a result, it cannot communicate with external systems, nor can external systems reach the container. For example:
+#### ClusterIP Services
+
+By default, when a service is created, it is accessible to all pods in the cluster, regardless of the node they run on. This default service type, called ClusterIP, is ideal for applications meant strictly for internal access. For example, if your orange pod hosts a database, a ClusterIP service ensures internal connectivity.
+
+#### NodePort Services
+
+When you need a service to be accessible from outside the cluster, such as when a purple pod hosts a web application, you use a NodePort service. This service still receives an internal cluster IP for intra-cluster communication, but it also exposes the application on a specific port on every node. This allows external users or applications to reach the service without direct access to individual pod IPs.
+
+### How Kubernetes Manages Service Networking
+
+Let’s start with a clean slate. Picture a three-node Kubernetes cluster that has no pods or services deployed yet. Each node runs a Kubelet process, responsible for pod creation by communicating with the Kube API Server and invoking the CNI plugin to configure networking. In parallel, every node also runs a Kube Proxy, which monitors cluster changes via the API Server and sets up forwarding rules whenever a new service is created.
+
+Unlike pods that have their dedicated network interfaces, services are virtual constructs spanning the entire cluster. When you create a service object, Kubernetes automatically assigns it an IP address from a predefined range (set via the Kube API Server’s --service-cluster-ip-range option). The kube-proxy on each node then configures the appropriate forwarding rules so that any traffic targeted at the service's IP and port is correctly routed to the backend pod.
+
+Whenever a pod sends traffic to a service IP, the kube-proxy rules step in to forward that traffic to the chosen backend pod. These rules are dynamically updated as services are created or removed. Kube Proxy supports several proxy modes, including user space, iptables, and IPVS (with iptables being the default unless specified otherwise).
+
+Here’s an example command to start the kube-proxy with a specific proxy mode:
 
 ```bash  theme={null}
-docker run --network none nginx
+kube-proxy --proxy-mode [userspace | iptables | ipvs] …
 ```
 
 <Callout icon="lightbulb" color="#1CB2FE">
-  Multiple containers started in the none network mode remain completely isolated from each other and the external network.
+  By default, kube-proxy uses iptables mode. Ensure your configuration specifies the intended mode using the --proxy-mode option whenever necessary.
 </Callout>
 
-#### Host Network
+## Practical Example: Service IP Assignment and Traffic Forwarding
 
-In the host network mode, the container shares its host's network stack. This means there is no network isolation between the host and the container. For instance, if a web application inside the container listens on port 80, that application immediately becomes accessible on port 80 of the host. However, running a second container that also attempts to bind to the same port will result in a failure because two processes cannot share the same port on the host. For example:
-
-```bash  theme={null}
-docker run --network host nginx
-```
-
-#### Bridge Network
-
-The default Docker networking mode is the bridge network. When Docker is installed, it automatically creates an internal private network called "bridge" (visible as "docker0" on the host) with a default subnet (usually 172.17.0.0/16). Each container connected to this network receives a unique IP address from this subnet. For example, running two containers:
+Consider a scenario where a pod named "db" is running on node-1 with the IP address 10.244.1.2. To expose this pod inside the cluster, you create a ClusterIP service named "db-service." When the service is created, Kubernetes assigns it an IP address (for example, 10.103.132.104) from the designated service cluster IP range.
 
 ```bash  theme={null}
-docker run nginx
-docker run nginx
+kubectl get pods -o wide
+NAME   READY   STATUS    RESTARTS   AGE   IP           NODE
+db     1/1     Running   0          14h   10.244.1.2   node-1
+
+kubectl get service
+NAME         TYPE        CLUSTER-IP      PORT(S)    AGE
+db-service   ClusterIP   10.103.132.104  3306/TCP   12h
 ```
 
-These containers communicate with each other over the internal bridge network. To inspect the list of available networks, use:
+In some clusters, the default service cluster IP range might be 10.0.0.0/24, but in other setups the API Server may be configured with a different range such as --service-cluster-ip-range=10.96.0.0/12. This means that service IPs can fall anywhere between 10.96.0.0 and 10.111.255.255. Meanwhile, the pod network CIDR might be something like 10.244.0.0/16, ensuring that pod IP addresses range between 10.244.0.0 and 10.244.255.255. It is crucial that these ranges do not overlap.
+
+When the "db-service" is created, kube-proxy establishes corresponding iptables rules so that traffic arriving at the service IP on port 3306 is redirected to the pod’s IP on the same port:
 
 ```bash  theme={null}
-docker network ls
+iptables -L -t nat | grep db-service
+KUBE-SVC-XA5OGUC7YRHOS3PU  tcp  --  anywhere  10.103.132.104  /* default/db-service: cluster IP */ tcp dpt:3306
+DNAT                      tcp  --  anywhere  anywhere  /* default/db-service: */ tcp to:10.244.1.2:3306
+KUBE-SEP-JBWCWHHQM57V2WN7  all  --  anywhere  anywhere  /* default/db-service: */
 ```
 
-An example output might look like:
+This DNAT (Destination Network Address Translation) rule ensures that any traffic to the service IP (10.103.132.104) on port 3306 is redirected to the pod’s IP (10.244.1.2).
 
-```text  theme={null}
-NETWORK ID          NAME                DRIVER              SCOPE
-2b6008726112        bridge              bridge              local
-0beb4870b093        host                host                local
-99035e02694f        none                null                local
-```
+Similarly, a NodePort service would have iptables rules that forward traffic arriving on a designated port on every node to the appropriate backend pods.
 
-Internally, Docker creates the "docker0" interface on the host, serving as the bridge between host and containers. Although the command output names it "bridge," it is implemented as the "docker0" interface. Verify this by running:
+## Verifying kube-proxy Operation
+
+To check which proxy mode your kube-proxy is using, you can inspect the kube-proxy logs:
 
 ```bash  theme={null}
-ip link show docker0
+cat /var/log/kube-proxy.log
 ```
 
-By default, the "docker0" interface is assigned the IP address 172.17.0.1. When a container is launched, Docker creates a new network namespace for it (similar to those discussed in earlier lessons). To list the available network namespaces (a minor hack may be required to display Docker-created namespaces):
+<Callout icon="lightbulb" color="#1CB2FE">
+  Note that the location of the kube-proxy log file may vary depending on your installation. If you do not see the expected entries, verify that the verbosity level of kube-proxy is set appropriately.
+</Callout>
 
-```bash  theme={null}
-ip netns list
-```
 
-Typically, the namespace will have a name starting with an identifier like `b3165...`. To view the network namespace details associated with a container, inspect the container details with:
-
-```bash  theme={null}
-docker inspect <container_id>
-```
-
-A snippet of the output under "NetworkSettings" might appear as follows:
-
-```json  theme={null}
-"NetworkSettings": {
-    "Bridge": "",
-    "SandboxID": "b3165c10a92b50edc4c8aa5f37273e180907ded31",
-    "SandboxKey": "/var/run/docker/netns/b3165c10a92b"
-}
-```
-
-### Container Attachment to the Bridge Network
-
-Docker attaches each container to the bridge network by creating a pair of virtual interfaces—essentially a virtual cable with an interface at each end. One interface is connected to the host's "docker0" bridge, and the other interface is placed inside the container's network namespace.
-
-Inspect the interfaces on the Docker host using:
-
-```bash  theme={null}
-ip link show
-```
-
-You might see an output similar to:
-
-```text  theme={null}
-4: docker0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default
-    link/ether 02:42:9b:5f:d6:21 brd ff:ff:ff:ff:ff:ff
-8: vethbb1c343@if7: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT group default
-    link/ether 9e:71:37:83:9f:50 brd ff:ff:ff:ff:ff:ff link-netnsid 1
-```
-
-To inspect the network namespace of a container (for example, with namespace ID `b3165c10a92b`), run:
-
-```bash  theme={null}
-ip -n b3165c10a92b link show
-```
-
-The output might be similar to:
-
-```text  theme={null}
-7: eth0@if8: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default
-    link/ether 02:42:ac:11:00:03 brd ff:ff:ff:ff:ff:ff link-netnsid 0
-```
-
-To view the IP address assigned to the container’s network interface:
-
-```bash  theme={null}
-ip -n b3165c10a92b addr show eth0
-```
-
-This may display:
-
-```text  theme={null}
-7: eth0@if8: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default
-    link/ether 02:42:ac:11:00:03 brd ff:ff:ff:ff:ff:ff link-netnsid 0
-    inet 172.17.0.3/16 brd 172.17.255.255 scope global eth0
-       valid_lft forever preferred_lft forever
-```
-
-Each time a new container is created, Docker follows these sequential steps:
-
-1. Creates a new network namespace.
-2. Establishes a pair of virtual interfaces.
-3. Attaches one end to the container’s namespace and the other to the "docker0" bridge.
-4. Assigns an IP address to the container's interface.
-
-The virtual interface pairs are numbered consistently, with odd and even numbers forming a pair (e.g., 7 and 8, 9 and 10).
-
-## Port Mapping
-
-Consider a scenario where a container runs an nginx web application that listens on port 80. By default, since the container runs in a private network segment, only other containers on the same network or the host can access application endpoints. Port mapping (port publishing) in Docker enables external access by mapping a port on the host to a port on the container.
-
-For example, to map port 8080 on the host to port 80 within the container:
-
-```bash  theme={null}
-docker run -p 8080:80 nginx
-```
-
-After setting up port mapping, you can test connectivity as follows:
-
-* Accessing the container directly via its IP on port 80 might result in a failure:
-
-  ```bash  theme={null}
-  curl http://172.17.0.3:80
-  # Output: curl: (7) Failed to connect... No route to host
-  ```
-
-* However, accessing the application using the host’s IP and port 8080 should succeed:
-
-  ```bash  theme={null}
-  curl http://192.168.1.10:8080
-  # Output: Welcome to nginx!
-  ```
-
-All incoming traffic to port 8080 on the Docker host is forwarded to port 80 in the container.
-
-#### How Port Forwarding Works
-
-Docker employs IP tables to implement port forwarding. This mechanism adds a Network Address Translation (NAT) rule to translate traffic arriving on a specific host port to the corresponding container port. For example, Docker might add a rule similar to the following:
-
-```bash  theme={null}
-iptables \
-  -t nat \
-  -A PREROUTING \
-  -j DNAT \
-  --dport 8080 \
-  --to-destination 80
-```
-
-This rule directs traffic arriving at port 8080 on the host to port 80 on the container. You can review the active NAT table rules by running:
-
-```bash  theme={null}
-iptables -nvL -t nat
-```
-
-An excerpt from the output might resemble:
-
-```text  theme={null}
-Chain DOCKER (2 references)
-target     prot opt source               destination
-RETURN     all  --  anywhere             anywhere
-DNAT       tcp  --  anywhere             anywhere     tcp dpt:8080 to:172.17.0.2:80
-```
-
-After the mapping is configured, testing access to the container using:
-
-```bash  theme={null}
-curl http://172.17.0.3:80
-```
-
-should return a response like:
-
-```text  theme={null}
-Welcome to nginx!
-```
