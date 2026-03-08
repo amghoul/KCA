@@ -858,4 +858,472 @@ cat /var/log/kube-proxy.log
   Note that the location of the kube-proxy log file may vary depending on your installation. If you do not see the expected entries, verify that the verbosity level of kube-proxy is set appropriately.
 </Callout>
 
+## CoreDNS in Kubernetes
 
+> This lesson covers how Kubernetes uses CoreDNS for DNS resolution to facilitate communication between pods and services within a cluster.
+
+Welcome to this lesson on CoreDNS in Kubernetes. In this guide, you will learn how Kubernetes implements DNS resolution within a cluster to facilitate seamless communication between pods and services.
+
+In our previous lesson, we explored how to address a service or pod from another pod. Now, we will explain how Kubernetes leverages a centralized DNS server to achieve that functionality.
+
+Imagine you have two pods with different IP addresses. One approach to enable communication between them is to add an entry into each pod’s hosts file. For instance, on the first pod, you might map the second pod (named "web") to IP 10.244.2.5, and on the second pod, map the first pod (named "test") to IP 10.244.1.5. However, when dealing with thousands of pods that are frequently created and removed, manually managing these entries becomes impractical.
+
+<Callout icon="lightbulb" color="#1CB2FE">
+  Instead of manually editing hosts files, Kubernetes deploys a central DNS server. Each pod is pre-configured via its /etc/resolv.conf file to use this centralized server (typically at 10.96.0.10), which automatically updates DNS records for new pods and services.
+</Callout>
+
+Kubernetes does not create DNS entries for individual pods manually. Instead, it sets up DNS records for services, and for pods, it converts IP addresses into hostnames by replacing dots with dashes.
+
+Before Kubernetes version 1.12, this service was known as Kube-DNS. Starting with version 1.12, however, the recommended DNS server is CoreDNS, which brings enhanced flexibility and performance. Below is a conceptual illustration showing how pods configure their /etc/resolv.conf to point to the DNS server:
+
+```bash  theme={null}
+cat /etc/resolv.conf
+nameserver 10.96.0.10
+```
+
+### CoreDNS Setup in the Cluster
+
+CoreDNS is deployed as a pod within the kube-system namespace. To ensure high availability, Kubernetes runs two replicas of CoreDNS pods managed by a ReplicaSet (now part of a Deployment). Each pod runs the CoreDNS executable, which you could also run manually if deploying CoreDNS independently.
+
+CoreDNS requires a configuration file—commonly named "Corefile" and located at /etc/coredns/Corefile—that outlines various plugins used to process DNS queries. An example configuration is shown below:
+
+```bash  theme={null}
+cat /etc/coredns/Corefile
+.:53 {
+    errors
+    health
+    kubernetes cluster.local in-addr.arpa ip6.arpa {
+        pods insecure
+        upstream
+        fallthrough in-addr.arpa ip6.arpa
+    }
+    prometheus :9153
+    proxy . /etc/resolv.conf
+    cache 30
+    reload
+}
+```
+
+This configuration performs the following functions:
+
+* Logs and handles errors.
+* Provides health check endpoints.
+* Integrates with Kubernetes via the Kubernetes plugin, configuring the primary domain to cluster.local and transforming pod IP addresses into a dashed hostname format.
+* Exposes Prometheus metrics for monitoring.
+* Forwards unresolved DNS queries (such as [www.google.com](http://www.google.com)) to the nameserver specified in the pod’s /etc/resolv.conf.
+* Caches DNS responses and supports dynamic reloads of the configuration upon changes.
+
+Note that this configuration is stored in a ConfigMap. If adjustments are needed, simply update the ConfigMap:
+
+```bash  theme={null}
+kubectl get configmap -n kube-system
+NAME      DATA   AGE
+coredns   1      168d
+```
+
+Once the CoreDNS pod is running with the correct configuration, it continuously monitors the Kubernetes API for new pods and services, allowing DNS records to be updated dynamically.
+
+### DNS Service and Pod Configuration
+
+To enable pods to communicate with the CoreDNS server, Kubernetes creates a service (named kube-dns by default) with the IP address 10.96.0.10. This IP is automatically set as the primary nameserver in all pod /etc/resolv.conf files. The service details are as follows:
+
+```bash  theme={null}
+kubectl get service -n kube-system
+NAME         TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)           AGE
+kube-dns     ClusterIP   10.96.0.10     <none>        53/UDP,53/TCP     1d
+```
+
+A typical pod’s /etc/resolv.conf file will appear as:
+
+```bash  theme={null}
+cat /etc/resolv.conf
+nameserver 10.96.0.10
+search default.svc.cluster.local svc.cluster.local cluster.local
+```
+
+This configuration is automatically managed by the Kubelet. If you inspect the Kubelet configuration file, you will find entries for both the cluster DNS and the cluster domain:
+
+```bash  theme={null}
+cat /var/lib/kubelet/config.yaml
+...
+clusterDNS:
+- 10.96.0.10
+clusterDomain: cluster.local
+```
+
+### Resolving Services and Pods
+
+With the correct DNS configuration, pods can resolve services using different domain name formats. For example, if you have a web service deployed in your cluster, you can access it using any of the following names:
+
+* web-service
+* web-service.default
+* web-service.default.svc
+* web-service.default.svc.cluster.local
+
+These examples are demonstrated in the commands below:
+
+```bash  theme={null}
+cat /etc/resolv.conf
+nameserver 10.96.0.10
+curl http://web-service
+curl http://web-service.default
+curl http://web-service.default.svc
+curl http://web-service.default.svc.cluster.local
+```
+
+You can also use tools like nslookup or host to check the fully qualified domain name:
+
+```bash  theme={null}
+host web-service
+web-service.default.svc.cluster.local has address 10.107.37.188
+```
+
+The search entries in /etc/resolv.conf allow the resolver to append the listed domains when you use partial names. However, individual pod names must always be resolved with their complete fully qualified domain name (FQDN).
+
+For example:
+
+```bash  theme={null}
+cat /etc/resolv.conf
+nameserver 10.96.0.10
+search default.svc.cluster.local svc.cluster.local cluster.local
+
+host web-service
+web-service.default.svc.cluster.local has address 10.107.37.188
+
+host 10-244-2-5
+Host 10-244-2-5 not found: 3(NXDOMAIN)
+
+host 10-244-2-5.default.pod.cluster.local
+10-244-2-5.default.pod.cluster.local has address 10.244.2.5
+```
+
+<Callout icon="lightbulb" color="#1CB2FE">
+  The search entries in the /etc/resolv.conf file simplify service resolution by allowing shorter names. However, pod-specific DNS records require their full FQDN for proper resolution.
+</Callout>
+
+## Ingress
+
+> This article provides a comprehensive guide on Kubernetes Ingress, covering its configuration, deployment, and use cases for managing external access to applications.
+
+### The Need for Ingress
+
+Imagine your company expands and you launch new services. For example, you might offer:
+
+* A video streaming service on myonlinestore.com/watch
+* The original application on myonlinestore.com/wear
+
+Even if both applications run within the same cluster with separate Deployments and Services (e.g., a LoadBalancer Service for the video service), each service might get its own high port and cloud load balancer. Managing multiple load balancers can increase costs, add complexity, and complicate SSL/TLS (HTTPS) configurations.
+
+#### Introducing Ingress
+
+Ingress simplifies external access by providing a single externally accessible IP for your Kubernetes applications. It allows you to configure URL-based routing rules, SSL termination, authentication, and more—acting as a built-in layer 7 load balancer.
+
+Even with Ingress, you still need an initial exposure mechanism (via NodePort or a cloud-native LoadBalancer). However, once this is set up, all further changes are made through the Ingress controller.
+
+Without Ingress, you would have to manually deploy and configure a reverse proxy or load balancer (such as NGINX, HAProxy, or Traefik) within your cluster to handle URL routing and manage SSL certificates. Ingress builds on these principles to offer an integrated solution.
+
+### Deploying an Ingress Controller
+
+To use Ingress, you must first deploy an Ingress controller. The controller continuously monitors the cluster for changes in Ingress resources and reconfigures the underlying load balancing solution accordingly.
+
+<Callout icon="lightbulb" color="#1CB2FE">
+  A Kubernetes cluster does not include an Ingress controller by default. If you create Ingress resources without deploying an Ingress controller, they will have no effect.
+</Callout>
+
+There are several Ingress controllers available, including GCE, NGINX, Contour, HAProxy, Traefik, and Istio. In this guide, we will use NGINX as the example.
+
+#### Deploying the NGINX Ingress Controller
+
+Below is an example of an NGINX Ingress controller deployment:
+
+
+This Deployment creates one replica of the NGINX Ingress controller using a Kubernetes-optimized NGINX image.
+
+To decouple configuration data from the image, you create a ConfigMap. This allows easy updates to log paths, keep-alive thresholds, SSL settings, session timeouts, and more without modifying the image.
+
+For a more comprehensive configuration, you can include environment variables to pass the Pod's name and namespace to the container. This enables the Ingress controller to load its configuration dynamically. Here is a complete configuration that includes the Deployment, Service, ConfigMap, and ServiceAccount:
+
+```yaml  theme={null}
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: nginx-ingress-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: nginx-ingress
+  template:
+    metadata:
+      labels:
+        name: nginx-ingress
+    spec:
+      containers:
+        - name: nginx-ingress-controller
+          image: quay.io/kubernetes-ingress-controller/nginx-ingress-controller:0.21.0
+          args:
+            - /nginx-ingress-controller
+            - --configmap=$(POD_NAMESPACE)/nginx-configuration
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: http
+              containerPort: 80
+            - name: https
+              containerPort: 443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-ingress
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+    - port: 443
+      targetPort: 443
+      protocol: TCP
+      name: https
+  selector:
+    name: nginx-ingress
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: nginx-configuration
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-ingress-serviceaccount
+```
+
+In addition to the objects above, you must create the necessary Roles, ClusterRoles, and RoleBindings so that the Ingress controller has permissions to monitor and modify Ingress resources in the cluster.
+
+### Creating Ingress Resources
+
+Once the NGINX Ingress controller is deployed, you can begin creating Ingress resources that define rules and configurations for routing external traffic to backend Services.
+
+#### Simple Ingress for a Single Service
+
+The following Ingress resource routes all incoming traffic to a single backend Service named "wear-service" on port 80:
+
+```yaml  theme={null}
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-wear
+spec:
+  backend:
+    serviceName: wear-service
+    servicePort: 80
+```
+
+To create this Ingress resource, run:
+
+```bash  theme={null}
+kubectl create -f Ingress-wear.yaml
+```
+
+You should see output similar to:
+
+```bash  theme={null}
+ingress.extensions/ingress-wear created
+```
+
+Verify its creation with:
+
+```bash  theme={null}
+kubectl get ingress
+```
+
+Expected output:
+
+```bash  theme={null}
+NAME           HOSTS   ADDRESS   PORTS  AGE
+ingress-wear   *       <none>    80     2s
+```
+
+This configuration directs all traffic to "wear-service".
+
+#### Ingress with Multiple URL Paths
+
+For more complex routing—such as directing traffic from different URL paths to different backend Services—use Ingress rules. Suppose you want:
+
+* Traffic to myonlinestore.com/wear to go to "wear-service"
+* Traffic to myonlinestore.com/watch to go to "watch-service"
+
+Define an Ingress resource as follows:
+
+```yaml  theme={null}
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-wear-watch
+spec:
+  rules:
+    - http:
+      paths:
+        - path: /wear
+            pathType: Prefix
+            backend:
+            service:
+                name: wear-service
+                port:
+                number: 80
+        - path: /watch
+        pathType: Prefix
+        backend:
+          service:
+            name: watch-service
+            port:
+              number: 80
+```
+
+After creating this resource, you can view its details by running:
+
+```bash  theme={null}
+kubectl describe ingress ingress-wear-watch
+```
+
+If a user visits an undefined URL (e.g., myonlinestore.com/listen), you can configure a default backend to serve a 404 page.
+
+#### Ingress Based on Host Names
+
+Another common scenario involves routing traffic based on host names. For example, you might want:
+
+* Traffic for myonlinestore.com to go to "primary-service"
+* Traffic for [www.myonlinestore.com](http://www.myonlinestore.com) to go to "secondary-service"
+
+Here’s how you can define the Ingress resource with host-specific rules:
+
+```yaml  theme={null}
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-domain-routing
+spec:
+  rules:
+    - host: myonlinestore.com
+    http:
+      paths:
+        - pathType: Prefix
+            path: "/"
+            backend:
+            service:
+                name: primary-service
+                port:
+                number: 80
+    - host: www.myonlinestore.com
+    http:
+      paths:
+        - pathType: Prefix
+            path: "/"
+            backend:
+            service:
+                name: secondary-service
+                port:
+                number: 80
+            
+```
+
+In this example, each rule handles traffic for a specific domain by routing all requests ("/") to the designated backend Service.
+
+### Now, in k8s version 1.20+ we can create an Ingress resource from the imperative way like this:-
+
+Format:
+```bash
+kubectl create ingress <ingress-name> --rule="host/path=service:port"
+```
+
+Example:
+```bash
+kubectl create ingress ingress-test --rule="wear.my-online-store.com/wear*=wear-service:80"
+```
+
+### Ingress - Annotations and rewrite-target
+Different ingress controllers have different options that can be used to customise the way it works. NGINX Ingress controller has many options that can be seen here. I would like to explain one such option that we will use in our labs. The Rewrite target option.
+
+Our watch app displays the video streaming webpage at http://<watch-service>:<port>/
+
+Our wear app displays the apparel webpage at http://<wear-service>:<port>/
+
+We must configure Ingress to achieve the below. When user visits the URL on the left, his/her request should be forwarded internally to the URL on the right. Note that the /watch and /wear URL path are what we configure on the ingress controller so we can forward users to the appropriate application in the backend. The applications don't have this URL/Path configured on them:
+
+http://<ingress-service>:<ingress-port>/watch --> http://<watch-service>:<port>/
+
+http://<ingress-service>:<ingress-port>/wear --> http://<wear-service>:<port>/
+
+Without the rewrite-target option, this is what would happen:
+
+http://<ingress-service>:<ingress-port>/watch --> http://<watch-service>:<port>/watch
+
+http://<ingress-service>:<ingress-port>/wear --> http://<wear-service>:<port>/wear
+
+Notice watch and wear at the end of the target URLs. The target applications are not configured with /watch or /wear paths. They are different applications built specifically for their purpose, so they don't expect /watch or /wear in the URLs. And as such the requests would fail and throw a 404 not found error.
+
+To fix that we want to "ReWrite" the URL when the request is passed on to the watch or wear applications. We don't want to pass in the same path that user typed in. So we specify the rewrite-target option. This rewrites the URL by replacing whatever is under rules->http->paths->path which happens to be /pay in this case with the value in rewrite-target. This works just like a search and replace function.
+
+For example: 
+```bash
+replace(path, rewrite-target)
+```
+In our case: 
+```bash
+replace("/path","/")
+```
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: test-ingress
+  namespace: critical-space
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /pay
+            pathType: Prefix
+            backend:
+              service:
+                name: pay-service
+                port:
+                  number: 8282
+```
+In another example given here, this could also be:
+```bash
+replace("/something(/|$)(.*)", "/$2")
+```
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rewrite
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  rules:
+    - host: rewrite.bar.com
+      http:
+        paths:
+          - path: /something(/|$)(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: http-svc
+                port:
+                  number: 80
+```
